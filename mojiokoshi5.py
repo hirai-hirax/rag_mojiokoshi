@@ -155,7 +155,7 @@ def generate_summary(model, prompt, text):
     print(f"Response: {response}")
     return response.choices[0].message.content
 
-def transcribe_chunk(chunk_info, client, prompt_text, model="whisper"):
+def transcribe_chunk(chunk_info, client, prompt_text, chunk_duration_ms, model="whisper"):
     """
     単一のオーディオチャンクを文字起こしする関数
     """
@@ -176,13 +176,18 @@ def transcribe_chunk(chunk_info, client, prompt_text, model="whisper"):
             transcript_dict = transcript.model_dump()
             segments = transcript_dict.get("segments", [])
             
-            # タイムスタンプを調整
-            for seg in segments:
-                seg = seg.copy()
-                seg["start"] += start_ms // 1000
-                seg["end"] += start_ms // 1000
+            # タイムスタンプを調整してグローバル時間に変換
+            # チャンク番号 × チャンク継続時間でグローバルオフセットを計算
+            global_offset_seconds = chunk_idx * (chunk_duration_ms / 1000.0)
             
-            return chunk_idx, segments
+            adjusted_segments = []
+            for seg in segments:
+                adjusted_seg = seg.copy()
+                adjusted_seg["start"] += global_offset_seconds
+                adjusted_seg["end"] += global_offset_seconds
+                adjusted_segments.append(adjusted_seg)
+            
+            return chunk_idx, adjusted_segments
             
     except Exception as e:
         st.error(f"チャンク {chunk_idx+1} の処理中にエラーが発生しました: {e}")
@@ -251,7 +256,7 @@ def transcribe_audio_to_dataframe(uploaded_file: BytesIO, duration: int, pdf_fil
             
             # 全てのチャンクを並列実行にサブミット
             future_to_chunk = {
-                executor.submit(transcribe_chunk, chunk_info, client, prompt_text, model): chunk_info[0] 
+                executor.submit(transcribe_chunk, chunk_info, client, prompt_text, chunk_duration_ms, model): chunk_info[0] 
                 for chunk_info in chunk_infos
             }
             

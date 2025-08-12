@@ -7,9 +7,6 @@ pandas
 python-dotenv
 resemblyzer
 numpy
-pathlib
-zipfile36
-subprocess32
 openpyxl
 langchain>=0.1.0
 langchain-openai

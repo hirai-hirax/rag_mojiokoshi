@@ -992,11 +992,11 @@ class RAGProofreadingSystem:
         try:
             # Azure OpenAI Embeddings
             self.embeddings = AzureOpenAIEmbeddings(
-                deployment="text-embedding-3-large",
+                deployment="text-embedding-ada-002",
                 openai_api_key=self.azure_api_key,
                 azure_endpoint=self.azure_endpoint,
                 openai_api_version=self.api_version,
-                chunk_size=1000
+                chunk_size=500
             )
         except Exception as e:
             st.error(f"LangChainコンポーネントの初期化エラー: {e}")
@@ -1024,8 +1024,8 @@ class RAGProofreadingSystem:
             with st.spinner("ベクターストアを構築中..."):
                 # テキストスプリッター
                 text_splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=1000,
-                    chunk_overlap=200
+                    chunk_size=500,
+                    chunk_overlap=100
                 )
                 
                 # ドキュメントをチャンク化
@@ -1221,10 +1221,10 @@ class RAGProofreadingSystem:
         """ナレッジベースをクリア"""
         self._clear_data()
     
-    def rag_enhanced_proofread(self, transcript_text, model="gpt-4o", search_type="similarity"):
+    def rag_enhanced_proofread(self, transcript_text, model="gpt-4o", search_type="similarity", top_k=5):
         """LangChainを使用した校正"""
         # LangChainで関連する文脈を検索
-        relevant_context = self.retrieve_relevant_context(transcript_text, search_type=search_type)
+        relevant_context = self.retrieve_relevant_context(transcript_text, search_type=search_type, top_k=top_k)
         
         # RAG強化プロンプト
         rag_proofreading_prompt = f"""
@@ -1309,6 +1309,21 @@ def knowledge_base_management():
             azure_api_key=AZURE_OPENAI_API_KEY,
             api_version=API_VERSION
         )
+        
+        # デフォルトのRAGDBファイルを自動読み込み
+        default_ragdb_path = "default_knowledge_base.ragdb"
+        if os.path.exists(default_ragdb_path):
+            try:
+                success, message, metadata = st.session_state.global_rag_system.load_knowledge_base(default_ragdb_path)
+                if success:
+                    st.success(f"✅ デフォルトナレッジベース '{default_ragdb_path}' を自動読み込みしました")
+                    if metadata:
+                        st.info(f"📊 読み込み内容: {metadata.get('description', 'データベース情報を取得中...')}")
+                else:
+                    st.warning(f"⚠️ デフォルトナレッジベースの読み込みに失敗: {message}")
+            except Exception as e:
+                st.error(f"❌ デフォルトナレッジベース読み込み中にエラーが発生: {str(e)}")
+        
     if 'global_db_info' not in st.session_state:
         st.session_state.global_db_info = st.session_state.global_rag_system.get_database_info()
 
@@ -1431,16 +1446,17 @@ def knowledge_base_management():
         processing_mode = st.selectbox(
             "処理モード",
             ["新規作成（既存データクリア）", "追加構築（推奨）"],
+            index=1,
             key="kb_processing_mode",
             help="通常、新規構築または全データ統合での再構築を行います"
         )
     with col_opt2:
         st.info("自動的に最適なチャンクサイズでテキスト分割されます")
         st.write("**システム設定**")
-        st.write("- チャンクサイズ: 1000文字")
-        st.write("- オーバーラップ: 200文字")
+        st.write("- チャンクサイズ: 500文字")
+        st.write("- オーバーラップ: 100文字")
         st.write("- ベクターストア: FAISS")
-        st.write("- 埋め込みモデル: text-embedding-3-large")
+        st.write("- 埋め込みモデル: text-embedding-ada-002")
 
     # ナレッジベース構築実行
     if document_files and st.button("🔧 ナレッジベース構築", key="kb_build_btn", type="primary"):
@@ -1558,7 +1574,7 @@ def knowledge_base_management():
             st.write("**技術仕様**")
             st.write("- 技術: RAG (Retrieval-Augmented Generation)")
             st.write("- LLMモデル: gpt-4o (Azure OpenAI)")
-            st.write("- 埋め込みモデル: text-embedding-3-large (Azure OpenAI)")
+            st.write("- 埋め込みモデル: text-embedding-ada-002 (Azure OpenAI)")
             st.write("- ベクターストア: FAISS")
             st.write("- テキスト分割: RecursiveCharacterTextSplitter")
             st.write("- 検索アルゴリズム: ベクトル類似度検索")
@@ -1680,8 +1696,8 @@ def proofread_meeting_minutes():
     # 検索結果数の設定
     top_k = st.selectbox(
         "検索する関連文脈の数",
-        options=[1, 2, 3, 4, 5],
-        index=2,
+        options=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        index=4,
         help="より多くの文脈を検索すると精度が向上しますが、処理時間が増加します"
     )
 
@@ -1778,7 +1794,8 @@ def proofread_meeting_minutes():
                 proofread_result = st.session_state.global_rag_system.rag_enhanced_proofread(
                     transcript_text, 
                     model=model_choice, 
-                    search_type=search_type if current_db_status['has_data'] else "similarity"
+                    search_type=search_type if current_db_status['has_data'] else "similarity",
+                    top_k=top_k
                 )
                 
                 if proofread_result:
@@ -1793,7 +1810,8 @@ def proofread_meeting_minutes():
                         with st.expander(f"🔍 RAG検索結果 ({search_type}検索)"):
                             relevant_context = st.session_state.global_rag_system.retrieve_relevant_context(
                                 transcript_text, 
-                                search_type=search_type
+                                search_type=search_type,
+                                top_k=top_k
                             )
                             if relevant_context:
                                 st.text_area("RAG検索結果", relevant_context, height=200, key="final_context_display")

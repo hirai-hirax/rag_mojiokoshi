@@ -1,4 +1,6 @@
 import os
+# OpenMP重複リンク警告を抑制
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import streamlit as st
 from openai import AzureOpenAI
 import tempfile
@@ -25,6 +27,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import AzureOpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.schema import Document
+from pathlib import Path
 
 torch.classes.__path__ = []
 
@@ -863,11 +866,21 @@ def speaker_identification_in_mojiokoshi():
 
                 transcript_content = "\n".join(transcript_lines)
 
+                # Word文書として保存
+                doc = DocxDocument()
+                doc.add_heading('議事録', 0)
+                for line in transcript_lines:
+                    doc.add_paragraph(line)
+                
+                docx_buffer = BytesIO()
+                doc.save(docx_buffer)
+                docx_buffer.seek(0)
+
                 st.download_button(
-                    label="議事録テキストファイルをダウンロード",
-                    data=transcript_content.encode('utf-8'),
-                    file_name='meeting_transcript.txt',
-                    mime='text/plain',
+                    label="議事録Word文書をダウンロード",
+                    data=docx_buffer.getvalue(),
+                    file_name='meeting_transcript.docx',
+                    mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                 )
 
         except Exception as e:
@@ -1187,9 +1200,18 @@ class RAGProofreadingSystem:
         doc_count = len(list(self.data_dir.glob('*.txt'))) if self.data_dir.exists() else 0
         vector_files = len(list(self.vectorstore_path.glob('*'))) if self.vectorstore_path.exists() else 0
         
+        # ベクターストアからチャンク数を取得
+        total_chunks = 0
+        if self.vectorstore is not None:
+            try:
+                total_chunks = self.vectorstore.index.ntotal
+            except:
+                total_chunks = 0
+        
         return {
             'documents_count': doc_count,
             'vector_files': vector_files,
+            'total_chunks': total_chunks,
             'is_indexed': self.is_indexed,
             'search_types': self.get_available_search_types(),
             'has_data': self.is_indexed and doc_count > 0
@@ -1573,6 +1595,19 @@ def proofread_meeting_minutes():
             azure_api_key=AZURE_OPENAI_API_KEY,
             api_version=API_VERSION
         )
+        
+        # デフォルトのRAGDBファイルを自動読み込み
+        default_ragdb_path = "default_knowledge_base.ragdb"
+        if os.path.exists(default_ragdb_path):
+            try:
+                success, message, metadata = st.session_state.global_rag_system.load_knowledge_base(default_ragdb_path)
+                if success:
+                    st.success(f"✅ デフォルトナレッジベース '{default_ragdb_path}' を自動読み込みしました")
+                else:
+                    st.warning(f"⚠️ デフォルトナレッジベースの読み込みに失敗しました: {message}")
+            except Exception as e:
+                st.warning(f"⚠️ デフォルトナレッジベースの読み込みに失敗しました: {e}")
+        
     if 'global_db_info' not in st.session_state:
         st.session_state.global_db_info = st.session_state.global_rag_system.get_database_info()
 
@@ -1653,23 +1688,30 @@ def proofread_meeting_minutes():
     # テキスト入力方法の選択
     input_method = st.radio(
         "議事録テキストの入力方法を選択してください",
-        ["テキストファイル(.txt)をアップロード", "テキストボックスに直接入力"],
+        ["テキストファイル(.txt/.docx)をアップロード", "テキストボックスに直接入力"],
         key="rag_input_method_selector"
     )
 
     transcript_text = ""
     
-    if input_method == "テキストファイル(.txt)をアップロード":
+    if input_method == "テキストファイル(.txt/.docx)をアップロード":
         uploaded_text_file = st.file_uploader(
             "議事録テキストファイルを選択してください",
-            type=["txt"],
+            type=["txt", "docx"],
             key="rag_upload_text_file"
         )
         
         if uploaded_text_file is not None:
             try:
-                transcript_text = uploaded_text_file.read().decode('utf-8')
-                st.success("テキストファイルが正常に読み込まれました。")
+                file_extension = uploaded_text_file.name.lower().split('.')[-1]
+                
+                if file_extension == 'txt':
+                    transcript_text = uploaded_text_file.read().decode('utf-8')
+                elif file_extension == 'docx':
+                    # Word文書からテキストを抽出
+                    transcript_text = get_text_from_docx(BytesIO(uploaded_text_file.read()))
+                
+                st.success(f"{file_extension.upper()}ファイルが正常に読み込まれました。")
                 st.text_area("読み込まれたテキスト（プレビュー）", 
                            transcript_text[:500] + "..." if len(transcript_text) > 500 else transcript_text, 
                            height=150, key="rag_text_preview")
@@ -1768,11 +1810,26 @@ def proofread_meeting_minutes():
                     col_dl, col_stats = st.columns([1, 1])
                     
                     with col_dl:
+                        # Word文書として保存
+                        doc = DocxDocument()
+                        doc.add_heading('RAG校正済み議事録', 0)
+                        
+                        # テキストを段落に分割して追加
+                        for line in proofread_result.split('\n'):
+                            if line.strip():
+                                doc.add_paragraph(line)
+                            else:
+                                doc.add_paragraph('')  # 空行を保持
+                        
+                        docx_buffer = BytesIO()
+                        doc.save(docx_buffer)
+                        docx_buffer.seek(0)
+                        
                         st.download_button(
                             label="📥 RAG校正済み議事録をダウンロード",
-                            data=proofread_result.encode('utf-8'),
-                            file_name=f"rag_proofread_{search_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                            mime='text/plain',
+                            data=docx_buffer.getvalue(),
+                            file_name=f"rag_proofread_{search_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx",
+                            mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                             key="download_final_rag_result"
                         )
                     
@@ -2114,12 +2171,23 @@ def transcribe_and_identify_speakers():
                 transcript_lines.append(text_str)
 
         transcript_content = "\n".join(transcript_lines)
+        
+        # Word文書として保存
+        doc = DocxDocument()
+        doc.add_heading('議事録', 0)
+        for line in transcript_lines:
+            doc.add_paragraph(line)
+        
+        docx_buffer = BytesIO()
+        doc.save(docx_buffer)
+        docx_buffer.seek(0)
+        
         st.download_button(
-            label="議事録テキストファイルをダウンロード",
-            data=transcript_content.encode('utf-8'),
-            file_name=f"{base_name}_議事録.txt",
-            mime='text/plain',
-            key="download_combined_text"
+            label="議事録Word文書をダウンロード",
+            data=docx_buffer.getvalue(),
+            file_name=f"{base_name}_議事録.docx",
+            mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            key="download_combined_docx"
         )
 
 def main():
